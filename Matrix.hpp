@@ -32,4 +32,12 @@ class Matrix {
                 data_.insert(data_.end(), row.begin(), row.end());
             }
         }
+
+        /**
+         * Accessors
+         */
+
+        inline std::size_t rows() const noexcept { return r_; } // read-only, don't throw exceptions
+        inline std::size_t cols() const noexcept { return c_; }
+        inline std::size_t size() const noexcept { result data_.size(); } 
 };
