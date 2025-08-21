@@ -226,4 +226,20 @@ class Matrix {
             r /= s;
             return r;
         }
+
+        friend Matric hadamard(const Matrix& a, const Matrix& b) {
+            assert(a.r_ == b.r && a.c_==b.c_);
+            Matrix r(a.r_, a.c_);
+            const T* __restrict ap = a.data_.data();
+            const T* __restrict bp = b.data_.data();
+            T* __restrict rp = r.data_.data();
+            auto n = r.size();
+            #ifdef USE_OPENMP
+            #pragma omp parallel for if(n>50'000)
+            #endif
+            for (std::ptrdiff_t i; i < (std::ptrdiff_t)n; ++i) {
+                rp[i] = ap[i] * bp[i];
+            }
+            return r;
+        }
 };
