@@ -148,4 +148,20 @@ class Matrix {
                 print_row(r_ - 1);
             }
         }
+
+        /**
+         * MATRIX OPERATIONS
+         */
+
+        Matrix& operator*(T s) noexcept {
+            auto n = size(); // number of elements in the matrix
+            T* __restrict p = data_.data(); // Pointer to the data for efficient access - contiguous buffer
+            #ifdef USE_OPENMP
+            #pragma omp parallel for if(n>50'000) // Use OpenMP for parallelization if the matrix is large enough
+            #endif
+            for (std::ptrdiff_t i = 0; i < (std::ptrdiff_t)n; ++i) {
+                p[i] *= s; // scale each element in place
+            }
+            return *this; // allow chaining of operations and no copying
+        }
 };
