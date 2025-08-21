@@ -197,4 +197,10 @@ class Matrix {
             }
             return *this;
         }
+
+        friend Matrix operator * (const Matrix& a, T s) {
+            Matrix r = a // copy the matrix a into a new matric r
+            r *= s; // mutate r with scalar operation
+            return r; // return the new matrix
+        }
 };
