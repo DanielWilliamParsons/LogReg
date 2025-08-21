@@ -3,6 +3,7 @@
 #include <vector>
 #include <initializer_list>
 #include <random>
+#include <chrono>
 
 #include <cassert>
 
@@ -47,6 +48,13 @@ class Matrix {
     private:
         std::size_t r_, c_; // Rows and columns
         std::vector<T> data_; // Data storage in a 1D vector
+        
+        // BLOCK SIZE: This allows us later to update size of the tiles for matrix multiplication, 
+        // allowing it to adapt to the architecture of any machine.
+        static std::size_t& default_block_size() {
+            static std::size_t bs = 64; // default
+            return bs;
+        }
 
     public:
         using value_type = T;
@@ -267,6 +275,9 @@ class Matrix {
             return C
         }
 
+        inline const T* raw() const noexcept { return data_.data(); }
+        inline T* raw() noexcept { return data_.data(); }
+
         static void multiply_into(const Matrix& A, const Matrix B, Matrix& C) {
             assert(A.c_ == B.r_);
             assert(C.r_ == A.r__ && C.c_ == B.c_);
@@ -301,6 +312,91 @@ class Matrix {
             }
             #endif
             // Fall back: our blocked kernel (works for any T)
-            
+            multiply_into_bs(A, B, C, default_block_size());
         }
+
+        static void multiply_into_bs(const Matrix& A, const Matrix& B, Matrix& C, std::size_t BS) {
+            // BS is the block size
+            assert(A.c_ == B.r_);
+            assert(C.r_ == A.r_ && C.c_ == B.c_);
+            std::fill(C.data_.begin(), C.data_.end(), T(0));
+
+            const std::size_t M = A.r_, N = B.c_, K = A.c_;
+
+            // Fallback to simply i-k-j for very small matrices to reduce loop overhead
+            if (M*N*K < 64ull*64ull*16ull) {
+                for (std::size_t i = 0; i < M; ++i) {
+                    for (std::size_t k = 0; k < K; ++k) {
+                        T aik = A(i,k);
+                        const T* __restrict bpk = &B(k, 0);
+                        T* __restrict cpi = &C(i, 0);
+                        for (std::size_t j = 0; j < N; ++j) {
+                            cpi[j] += aik * bpk[j];
+                        }
+                    }
+                }
+                return;
+            }
+
+            // Perform matrix multiplication based on a specific block size
+            if (BS == 0) BS = default_block_size();
+
+            for (std::size_t ii=0; ii<M; ii+=BS) {
+                const std::size_t iimax = std::min(ii+BS, M);
+                for (std::size_t kk=0; kk<K; kk+=BS) {
+                    const std::size_t kkmax = std::min(kk+BS, K);
+                    for (std::size_t jj=0; jj<N; jj+=BS) {
+                        const std::size_t jjmax = std::min(jj+BS,N);
+
+                        #ifdef USE_OPENMP
+                        #pragma omp parallel for
+                        #endif
+                        for (std::ptrdiff_t i = (std::ptrdiff_t)ii; i < (std::ptrdiff_t)iimax; ++i) {
+                            for (std::ptrdiff_t k = (std::ptrdiff_t)kk; k < (std::ptrdiff_t)kkmax; ++k) {
+                                T aik = A((std::size_t)i,(std::size_t)k);
+                                const T* __restrict bpk = &B((std::size_t)k, jj);
+                                T* __restrict cpi = &C((std::size_t)i, jj);
+                                for (std::size_t j = jj; j < jjmax; ++j) {
+                                    cpi[j - jj] += aik * bpk[j - jj];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        static void set_block_size(std::size_t bs) {
+            if (bs < 16) bs = 16; // guard tiny
+            default_block_size() = bs;
+        }
+
+        static std::size_t get_block_size() {
+            return default_block_size();
+        }
+
+        // Find the best block size for a given machine
+        static std::size_t tune_block_size(std::size_t test_dim = 512, std::initializer_list<std::size_t> candidates = {32, 48, 64, 96, 128}, unsigned seed = 12345) {
+            Matrix A(test_dim, test_dim), B(test_dim, test_dim), C(test_dim, test_dim);
+            A.fill_random(seed);
+            B.fill_random(seed+1);
+
+            double best_ms = std::numeric_limits<double>::infinity();
+            std::size_t best_bs = default_block_size();
+
+            for (std::size_t bs : candidates) {
+                multiply_into_bs(A, B, C, bs);
+                auto t0 = std::chrono::high_resolution_clock::now();
+                multiply_into_bs(A, B, C, bs);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                if (ms < best_ms) {
+                    best_ms = ms;
+                    best_bs = bs;
+                }
+            }
+            set_block_size(best_bs);
+            return best_bs;
+        }
+
 };
