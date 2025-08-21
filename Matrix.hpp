@@ -205,9 +205,14 @@ class Matrix {
             return r; // return the new matrix
         }
 
-        friend Matric operator * (T s, const Matrix & a) {
+        friend Matrix operator * (T s, const Matrix & a) {
             Matrix r = a;
             r *= s;
             return r;
+        }
+
+        friend Matrix operator + (Matrix a, const Matrix& b) {
+            a += b;
+            return a;
         }
 };
