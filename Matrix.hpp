@@ -215,4 +215,9 @@ class Matrix {
             a += b;
             return a;
         }
+
+        friend Matrix operator - (Matrix a, const Matrix& b) {
+            a -= b;
+            return a;
+        }
 };
