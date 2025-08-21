@@ -4,6 +4,43 @@
 #include <initializer_list>
 #include <random>
 
+#include <cassert>
+
+// Parallelization and Speeding up matrix calculations
+#ifdef USE_OPENMP
+    #include <omp.h>
+#endif
+
+// BLAS backends
+// Define exactly one of: USE_OPENBLAS, USE_MKL, USE_ACCELERATE
+#if defined(USE_ACCELERATE)
+    #include <Accelerate/Accelerate.h> // For use on macs
+    #define USE_CBLAS 1
+#elif defined(USE_MKL)
+    #include <mkl_cblas.h>
+    #define USE_CBLAS 1
+#elif defined(USE_OPENBLAS)
+    #include <cblas.h>
+    #define USE_CBLAS 1
+#endif
+
+// === Optional Metal (GPU) backend hook ===
+// Implemented in metal_mm.mm (Objective-C++). Only supports float (fp32) on Apple GPUs
+// For matrix multiplication
+#if defined(USE_METAL)
+extern "C" bool metal_gemm_f32_rowmajor(
+    const float* A,
+    const float* B,
+    float* C,
+    int M,
+    int N,
+    int k,
+    int lda,
+    int ldb,
+    int ladc
+)
+#endif
+
 template<class T = double>
 class Matrix {
 
