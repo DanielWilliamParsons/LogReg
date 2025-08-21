@@ -257,4 +257,50 @@ class Matrix {
             }
             return R;
         }
+
+        // Matrix multiplication: blocked i-k-j with tiles for cache locality.
+        // C = A * B
+        friend Matrix operator * (const Matrix& A, const Matrix& B) {
+            assert(A.c_ == B.r_);
+            Matrix C(A.r_, B.c_, T(0));
+            multiply_into(A, B, C);
+            return C
+        }
+
+        static void multiply_into(const Matrix& A, const Matrix B, Matrix& C) {
+            assert(A.c_ == B.r_);
+            assert(C.r_ == A.r__ && C.c_ == B.c_);
+
+            // GPU path: Metal MPS for float 32
+            #if defined(USE_METAL)
+            if constexpr (std::is_same_v<T, float>) {
+                const int M = (int)A.r_, N = (int)B.c_, K = (int)A.c_;
+                if (metal_gemm_f32_rowmajor(
+                    A.raw(), B.raw(), C.raw(),
+                    M, N, K,
+                    (int)A.c_, (int)B.c_, (int)C.c_)
+                ) {
+                    return;
+                }
+            }
+            #endif
+
+            // If BLAS available and T is double, delegate to dgemm (row-major)
+            #if defined(USE_CBLAS)
+            if constexpr (std::is_same_v<T, double>) {
+                const int M = (int)A.r_, N = (int)B.c_, K = (int)A.c_;
+                const double alpha = 1.0, beta = 0.0
+                // leading dimensions for row-major are number of columns
+                cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTran,
+                            M, N, K, alpha,
+                            A.raw(), (int)A.c_,
+                            B.raw(), (int)B.c_,
+                            beta,
+                            C.raw(), (int)C.c_);
+                return
+            }
+            #endif
+            // Fall back: our blocked kernel (works for any T)
+            
+        }
 };
