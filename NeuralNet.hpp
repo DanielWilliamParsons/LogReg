@@ -8,6 +8,8 @@ class NeuralNet {
     private:
         int n_; // number of features
         int k_; // number of classes
+        Matrix<double> W_; // Matrix of model weights
+        Matrix<double> b_; // Matrix of model biases
 
     public:
         // Constructors
