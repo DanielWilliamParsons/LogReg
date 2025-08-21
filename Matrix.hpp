@@ -169,4 +169,20 @@ class Matrix {
             if (s == T(0)) throw std::runtime_error("Division by zero in Matrix operator /=");
             return (*this) *= T(1) / s; // Use the multiplication operator to scale by the reciprocal of s, avoiding code duplication and because division is expensive.
         }
+
+        Matrix& operator += (const Matrix& b) {
+            assert(r_==b.r_ && c_==b.c_);
+            auto n = size();
+            const T* __restrict bp = b.data_.data();
+            T* __restrict ap = data_.data();
+            #ifdef USE_OPENMP
+            #pragma omp parallel for if(n>50'000)
+            #endif
+            for (std::ptrdiff_t i = 0; i < (std::ptrdiff_t)n; ++i) {
+                ap[i] += bp[i];
+            }
+            return *this;
+        }
+
+        
 };
