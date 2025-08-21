@@ -220,4 +220,10 @@ class Matrix {
             a -= b;
             return a;
         }
+
+        friend Matrix operator / (const Matrix& a, T s) {
+            Matrix r = a;
+            r /= s;
+            return r;
+        }
 };
