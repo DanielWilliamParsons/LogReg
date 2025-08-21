@@ -227,7 +227,7 @@ class Matrix {
             return r;
         }
 
-        friend Matric hadamard(const Matrix& a, const Matrix& b) {
+        friend Matrix hadamard(const Matrix& a, const Matrix& b) {
             assert(a.r_ == b.r && a.c_==b.c_);
             Matrix r(a.r_, a.c_);
             const T* __restrict ap = a.data_.data();
@@ -241,5 +241,15 @@ class Matrix {
                 rp[i] = ap[i] * bp[i];
             }
             return r;
+        }
+
+        Matrix Tpose() const {
+            Matrix R(c_, r_);
+            for (std::size_t i = 0; i < r_; ++i) {
+                for (std::size_t j = 0; j < c_; ++j) {
+                    R(j, i) = operator()(i, j)
+                }
+            }
+            return R;
         }
 };
