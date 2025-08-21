@@ -116,4 +116,36 @@ class Matrix {
             std::uniform_real_distribution<T> dist(low, high);
             for (auto &x : data_) x = dist(rng);
         }
+
+        /**
+         * Pretty print matrices
+         */
+        void print(std::string_view name = "") const {
+            if (!name.empty()) std::cout << name << " ("<<r_<<"x"<<c_<<")\n";
+            std::cout.setf(std::ios::fixed);
+            std::cout<<std::setprecision(4);
+
+            auto print_row = [&](std::size_t i) {
+                for (std::size_t j = 0; j < std::min(c_, std::size_t(9)); ++j) {
+                    std::cout << std::setw(9) << operator()(i, j) << ' ';
+                }
+                if (c_ > 10) std::cout << "... ";
+                if (c_ > 9) {
+                    std::cout << std::setw(9) << operator()(i, c_ - 1) << ' ';
+                }
+                std::cout << "\n";
+            };
+
+            for (std::size_t i = 0; i < std::min(r_, std::size_t(9)); ++i) {
+                print_row(i);
+            }
+
+            if (r_ > 10) {
+                std::cout << "   ...\n";
+            }
+
+            if (r_ > 9) {
+                print_row(r_ - 1);
+            }
+        }
 };
