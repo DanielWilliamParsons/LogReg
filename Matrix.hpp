@@ -230,17 +230,22 @@ class Matrix {
         friend Matrix hadamard(const Matrix& a, const Matrix& b) {
             assert(a.r_ == b.r && a.c_==b.c_);
             Matrix r(a.r_, a.c_);
-            const T* __restrict ap = a.data_.data();
-            const T* __restrict bp = b.data_.data();
-            T* __restrict rp = r.data_.data();
+            const T* __restrict ap = a.data_.data(); // raw pointer to read-only data from a, restrict means there is no aliasing, i.e., the pointer to the memory is unique to that data and is not pointed at by another variable.
+            const T* __restrict bp = b.data_.data(); // same as above. Note that .data() gets the data from a vector, which are stored in contiguous blocks of memory
+            T* __restrict rp = r.data_.data(); // raw pointer, but can be written to
             auto n = r.size();
             #ifdef USE_OPENMP
             #pragma omp parallel for if(n>50'000)
             #endif
             for (std::size_t i = 0; i < n; ++i) {
-                rp[i] = ap[i] * bp[i];
+                rp[i] = ap[i] * bp[i]; // ap[i] is pointer arithmetic - it means "move i steps along the contiguous block of memory from the address at ap" and get that element
             }
             return r;
+            // As a result of the matrices being in contigous blocks of memory due to being a std::vector, and the __restrict keyword reassuring the compiler
+            // that the pointers to the data are unique, the compiler can call the assembly code to multiply 4 x 8-byte elements (if T is a double)
+            // simultaneously or 8 x 8-byte elements depending on the CPU used.
+            // Without this, the compiler would not vectorize.
+            // This is an example of high performance computing - HPC
         }
 
         Matrix Tpose() const {
