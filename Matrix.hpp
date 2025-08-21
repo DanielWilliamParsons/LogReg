@@ -153,7 +153,7 @@ class Matrix {
          * MATRIX OPERATIONS
          */
 
-        Matrix& operator*(T s) noexcept {
+        Matrix& operator *= (T s) noexcept {
             auto n = size(); // number of elements in the matrix
             T* __restrict p = data_.data(); // Pointer to the data for efficient access - contiguous buffer
             #ifdef USE_OPENMP
@@ -163,5 +163,10 @@ class Matrix {
                 p[i] *= s; // scale each element in place
             }
             return *this; // allow chaining of operations and no copying
+        }
+
+        Matrix& operator /= (T s) {
+            if (s == T(0)) throw std::runtime_error("Division by zero in Matrix operator /=");
+            return (*this) *= T(1) / s; // Use the multiplication operator to scale by the reciprocal of s, avoiding code duplication and because division is expensive.
         }
 };
