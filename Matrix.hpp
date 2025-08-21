@@ -159,7 +159,7 @@ class Matrix {
             #ifdef USE_OPENMP
             #pragma omp parallel for if(n>50'000) // Use OpenMP for parallelization if the matrix is large enough
             #endif
-            for (std::ptrdiff_t i = 0; i < (std::ptrdiff_t)n; ++i) {
+            for (std::size_t i = 0; i < n; ++i) {
                 p[i] *= s; // scale each element in place
             }
             return *this; // allow chaining of operations and no copying
@@ -178,7 +178,7 @@ class Matrix {
             #ifdef USE_OPENMP
             #pragma omp parallel for if(n>50'000)
             #endif
-            for (std::ptrdiff_t i = 0; i < (std::ptrdiff_t)n; ++i) {
+            for (std::size_t i = 0; i < n; ++i) {
                 ap[i] += bp[i];
             }
             return *this;
@@ -192,7 +192,7 @@ class Matrix {
             #ifdef USE_OPENMP
             #pragma omp parallel for if(n>50'000)
             #endif
-            for (std::ptrdiff_t i = 0; i < (std::ptrdiff_t)n; ++i) {
+            for (std::size_t i = 0; i < n; ++i) {
                 ap[i] -= bp[i];
             }
             return *this;
@@ -237,7 +237,7 @@ class Matrix {
             #ifdef USE_OPENMP
             #pragma omp parallel for if(n>50'000)
             #endif
-            for (std::ptrdiff_t i; i < (std::ptrdiff_t)n; ++i) {
+            for (std::size_t i = 0; i < n; ++i) {
                 rp[i] = ap[i] * bp[i];
             }
             return r;
