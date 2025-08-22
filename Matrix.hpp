@@ -289,6 +289,26 @@ class Matrix {
             assert(A.c_ == B.r_);
             assert(C.r_ == A.r__ && C.c_ == B.c_);
 
+            const int M = (int)A.r_;
+            const int N = (int)B.c_;
+            const int K = (int)A.c_;
+
+            // --- Apple hybrid scheduler: Accelerate (CPU) + Metal (GPU) for float ---
+            #if defined(__APPLE__) && defined(USE_ACCELERATE) && defined(USE_METAL)
+            if constexpr (std::is_same_v<T, float>) {
+                if (hybrid_enabled() && (std::size_t)M*(std::size_t)N*(std::size_t)K >= hybrid_threshold()) {
+                    if (multiply_inti_hybrid_accel_metal(A,B,C)) return; // succeeded
+                }
+            }
+            #endif
+
+            // ---- MAGMA GPU on Linux/Windows (float & double) ----
+            #if defined(USE_MAGMA) && !defined(__APPLE__)
+            if (magma_enabled()) {
+                if (magma_gemm(A,B,C)) returnd; // succeeded
+            }
+            #endif
+
             // GPU path: Metal MPS for float 32
             #if defined(USE_METAL)
             if constexpr (std::is_same_v<T, float>) {
@@ -303,10 +323,9 @@ class Matrix {
             }
             #endif
 
-            // If BLAS available and T is double, delegate to dgemm (row-major)
+            // ---- Plain CBLAS (CPU). Supports float and double. ----
             #if defined(USE_CBLAS)
             if constexpr (std::is_same_v<T, double>) {
-                const int M = (int)A.r_, N = (int)B.c_, K = (int)A.c_;
                 const double alpha = 1.0, beta = 0.0
                 // leading dimensions for row-major are number of columns
                 cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTran,
@@ -315,13 +334,23 @@ class Matrix {
                             B.raw(), (int)B.c_,
                             beta,
                             C.raw(), (int)C.c_);
-                return
+                return;
+            } else if constexpr (std::is_same_v<T, float>) {
+                const float alpha=1.0f, beta=0.0f;
+                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                            M, N, K, alpha,
+                            A.raw(), (int)A.c_,
+                            B.raw(), (int)B.c_,
+                            beta,
+                            C.raw(), (int)C.c_);
+                return;
             }
             #endif
             // Fall back: our blocked kernel (works for any T)
             multiply_into_bs(A, B, C, default_block_size());
         }
 
+        // Runtime-configurable blocked multiply
         static void multiply_into_bs(const Matrix& A, const Matrix& B, Matrix& C, std::size_t BS) {
             // BS is the block size
             assert(A.c_ == B.r_);
@@ -405,5 +434,45 @@ class Matrix {
             set_block_size(best_bs);
             return best_bs;
         }
+
+        /**
+         * Determine whether to use apple accelerate and meta, MAGMA, or plain CBLAS.
+         */
+        #if defined(__APPLE__) && defined(USE_ACCELERATE) && defined(USE_METAL)
+            static bool& hybrid_enabled_flag() {
+                static bool on = true;
+                return on;
+            }
+            static double& hybrid_ratio() {
+                static double r = 0.5;
+                return r;
+            }
+
+            static std::size_t& hybrid_threshold_ref() {
+                static std::size_t t = 256ull*256ull*256ull; // ~1.6e7 flops
+                return t;
+            }
+
+            static bool multiply_into_hybrid_accel_metal(const Matrix& A, const Matrix& B, const Matrix& C) {
+                const int M = (int)A.r_, N = (int)B.c_, K = (int)A.c_;
+                int Ngpu = (int)std::llround(hybrid_ratio() * N);
+                if (Ngpu <= 0) {
+                    // CPU only
+                    const float alpha = 1.0f, beta=0.0f;
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                M, N, K, alpha,
+                                A.raw(), (int)A.c_,
+                                B.raw(), (int)B.c_,
+                                beta,
+                                C.raw(), (int)C.c_);
+                    return true;
+                }
+                if (Ngpu >= N) {
+                    // GPU only
+
+                }
+            }
+
+        #endif
 
 };
