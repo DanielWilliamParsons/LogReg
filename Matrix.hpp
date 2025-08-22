@@ -25,6 +25,13 @@
     #define USE_CBLAS 1
 #endif
 
+// === Optional MAGMA (GPU on Linux/Windows; requires CUDA/ROCm) ===
+// Enable with -DUSE_MAGMA and link against MAGMA + CUDA (or ROCm) libs
+#if defined(USE_MAGMA) && !defined(__APPLE__)
+    #include <magma_v2.h>
+    #include <magma_lapack.h>
+#endif
+
 // === Optional Metal (GPU) backend hook ===
 // Implemented in metal_mm.mm (Objective-C++). Only supports float (fp32) on Apple GPUs
 // For matrix multiplication
