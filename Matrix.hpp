@@ -49,6 +49,13 @@ extern "C" bool metal_gemm_f32_rowmajor(
 )
 #endif
 
+/**
+ * Matrix class for basic matrix operations.
+ * Cache-friendly dense matric for numeric work.
+ * Dense matrix multiplication paths:
+ * - Apple: Accelerate (CPU) + Metal (GPU) for float, BLAS for double
+ * - Linux/Windows: MAGMA (GPU) if enabled; otherwise CBLAS if enabled; otherwise blocked CPU kernel.
+ */
 template<class T = double>
 class Matrix {
 
@@ -215,7 +222,7 @@ class Matrix {
 
         // Non-mutating operations
         friend Matrix operator * (const Matrix& a, T s) {
-            Matrix r = a // copy the matrix a into a new matric r
+            Matrix r = a // copy the matrix a into a new matrix r
             r *= s; // mutate r with scalar operation
             return r; // return the new matrix
         }
@@ -285,7 +292,7 @@ class Matrix {
         inline const T* raw() const noexcept { return data_.data(); }
         inline T* raw() noexcept { return data_.data(); }
 
-        static void multiply_into(const Matrix& A, const Matrix B, Matrix& C) {
+        static void multiply_into(const Matrix& A, const Matrix& B, Matrix& C) {
             assert(A.c_ == B.r_);
             assert(C.r_ == A.r__ && C.c_ == B.c_);
 
@@ -297,7 +304,7 @@ class Matrix {
             #if defined(__APPLE__) && defined(USE_ACCELERATE) && defined(USE_METAL)
             if constexpr (std::is_same_v<T, float>) {
                 if (hybrid_enabled() && (std::size_t)M*(std::size_t)N*(std::size_t)K >= hybrid_threshold()) {
-                    if (multiply_inti_hybrid_accel_metal(A,B,C)) return; // succeeded
+                    if (multiply_into_hybrid_accel_metal(A,B,C)) return; // succeeded
                 }
             }
             #endif
@@ -309,26 +316,26 @@ class Matrix {
             }
             #endif
 
-            // GPU path: Metal MPS for float 32
-            #if defined(USE_METAL)
-            if constexpr (std::is_same_v<T, float>) {
-                const int M = (int)A.r_, N = (int)B.c_, K = (int)A.c_;
-                if (metal_gemm_f32_rowmajor(
-                    A.raw(), B.raw(), C.raw(),
-                    M, N, K,
-                    (int)A.c_, (int)B.c_, (int)C.c_)
-                ) {
-                    return;
-                }
-            }
-            #endif
+            // // GPU path: Metal MPS for float 32
+            // #if defined(USE_METAL)
+            // if constexpr (std::is_same_v<T, float>) {
+            //     const int M = (int)A.r_, N = (int)B.c_, K = (int)A.c_;
+            //     if (metal_gemm_f32_rowmajor(
+            //         A.raw(), B.raw(), C.raw(),
+            //         M, N, K,
+            //         (int)A.c_, (int)B.c_, (int)C.c_)
+            //     ) {
+            //         return;
+            //     }
+            // }
+            // #endif
 
             // ---- Plain CBLAS (CPU). Supports float and double. ----
             #if defined(USE_CBLAS)
             if constexpr (std::is_same_v<T, double>) {
                 const double alpha = 1.0, beta = 0.0
                 // leading dimensions for row-major are number of columns
-                cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTran,
+                cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                             M, N, K, alpha,
                             A.raw(), (int)A.c_,
                             B.raw(), (int)B.c_,
@@ -436,9 +443,47 @@ class Matrix {
         }
 
         /**
-         * Determine whether to use apple accelerate and meta, MAGMA, or plain CBLAS.
+         * Determine whether to use apple accelerate + metal, MAGMA on Windows/Linux, or plain CBLAS.
          */
         #if defined(__APPLE__) && defined(USE_ACCELERATE) && defined(USE_METAL)
+            static void set_hybrid_enabled(bool on) {
+                return hybrid_enabled_flag() = on;
+            }
+            static bool hybrid_enabled() {
+                return hybrid_enabled_flag();
+            }
+            static void set_hybrid_ratio(double r) {
+                if (r < 0) {
+                    r = 0;
+                }
+                if (r > 1) {
+                    r = 1;
+                }
+                hybrid_ratio() = r;
+            }
+            static double get_hybrid_ratio() {
+                return hybrid_ratio();
+            }
+            static void set_hybrid_threshold(std::size_t flops) {
+                hybrid_threshold() = flops;
+            }
+            static std::size_t hybrid_threshold() {
+                return hybrid_threshold_ref();
+            }
+        #endif
+
+        #if defined(USE_MAGMA) && !defined(__APPLE__)
+            static void set_magma_enabled(bool on) {
+                magma_enabled_flag() = on;
+            }
+            static bool magma_enabled() {
+                return magma_enabled_flag();
+            }
+        #endif
+
+
+        #if defined(__APPLE__) && defined(USE_ACCELERATE) && defined(USE_METAL)
+
             static bool& hybrid_enabled_flag() {
                 static bool on = true;
                 return on;
@@ -469,10 +514,132 @@ class Matrix {
                 }
                 if (Ngpu >= N) {
                     // GPU only
-
+                    if (metal_gemm_f32_rowmajor(A.raw(), B.raw(), C.raw(), M, N, K, (int)A.c_, (int)B.c_, (int)C.c_)) {
+                        return true;
+                    }
+                    // GPU failed, so fall back to CPU
+                    const float alpha=1.0f, beta=0.0f;
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                M, N, K, alpha, 
+                                A.raw(), (int)A.c_, 
+                                B.raw(), (int)B.c_, 
+                                beta, C.raw(), 
+                                (int)C.c_);
+                    return true;
                 }
-            }
 
+                // Split between CPU and GPU
+                // Split B and C by column at j0 = Ngpu
+                const float* B_gpu = B.raw(); // columns [0, Ngpu]
+                float* C_gpu = C.raw();
+                const float* B_cpu = B.raw() + Ngpu;
+                float* C_cpu = C.raw() + Ngpu;
+
+                // Launch CPU part in a thread
+                std::thread cpu_th([&] {
+                    const float alpha=1.0f, beta=0.0f;
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                M, N-Ngpu, K, alpha,
+                                A.raw(), (int)A.c_,
+                                B_cpu, (int)B.c_,
+                                beta,
+                                C_cpu, (int)C.c_);
+                });
+
+                // Run GPU on main thread
+                bool ok = meta_gemm_f32_rowmajor(A.raw(), B_gpu, C_gpu, M, Ngpu, K,
+                                                    (int)A.c_, (int)B.c_, (int)C.c_);
+                cpu_th.join();
+
+                if (!ok) {
+                    // If GPU failed, redo entire thing on CPU to ensure correctness
+                    const float alpha=1.0f, beta=0.0f;
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                M, N, K, alpha, A.raw(), 
+                                (int)A.c_, B.raw(), 
+                                (int)B.c_, beta, 
+                                C.raw(), (int)C.c_);
+                }
+                return true;
+            }
+        #endif
+
+        #if defined(USE_MAGMA) && !defined(__APPLE__)
+            static bool& magma_enabled_flag() { static bool on = true; return on; }
+
+            // Initialize MAGMA once (queue on device 0)
+            struct MagmaOnce {
+                magma_queue_t queue = nullptr;
+                int device = 0;
+                bool ok = false;
+                MagmaOnce() {
+                    if (magma_init() == MAGMA_SUCCESS) {
+                        magma_getdevice(&device);
+                        if (magma_queue_create(device, &queue) == MAGMA_SUCCESS) ok = true;
+                    }
+                }
+                ~MagmaOnce() {
+                    if (queue) magma_queue_destroy(queue);
+                    magma_finalize();
+                }
+            };
+
+            static MagmaOnce& magma_state() { static MagmaOnce s; return s; }
+
+            static inline magma_int_t roundup32(magma_int_t x) { return (x + 31) & ~31; }
+
+            static bool magma_gemm(const Matrix& A, const Matrix& B, Matrix& C) {
+                auto& S = magma_state();
+                if (!S.ok) return false;
+                const int M = (int)A.r_, N = (int)B.c_, K = (int)A.c_;
+                if (M==0 || N==0 || K==0) { std::fill(C.data_.begin(), C.data_.end(), T(0)); return true; }
+
+                // We keep matrices in row-major. To use column-major MAGMA, compute C^T = B^T * A^T.
+                magma_int_t m = N, n = M, k = K; // column-major dims for C^T
+                magma_int_t ldda = roundup32((magma_int_t)B.c_); // rows of B^T = N
+                magma_int_t lddb = roundup32((magma_int_t)A.c_); // rows of A^T = K
+                magma_int_t lddc = roundup32((magma_int_t)C.c_); // rows of C^T = N
+
+                bool ok = true;
+
+                if constexpr (std::is_same_v<T,float>) {
+                    magmaFloat_ptr dA=nullptr, dB=nullptr, dC=nullptr;
+                    if (magma_smalloc(&dA, (size_t)lddb * (size_t)n) != MAGMA_SUCCESS) return false; // A^T: k x m -> rows=k, cols=m
+                    if (magma_smalloc(&dB, (size_t)ldda * (size_t)k) != MAGMA_SUCCESS) { magma_free(dA); return false; } // B^T: n x k -> rows=n, cols=k
+                    if (magma_smalloc(&dC, (size_t)lddc * (size_t)n) != MAGMA_SUCCESS) { magma_free(dA); magma_free(dB); return false; } // C^T: n x m
+
+                    // Host->Device
+                    magma_ssetmatrix(N, K, B.raw(), (magma_int_t)B.c_, dB, ldda, S.queue); // B^T is represented by B (row-major)
+                    magma_ssetmatrix(K, M, A.raw(), (magma_int_t)A.c_, dA, lddb, S.queue); // A^T is represented by A (row-major)
+
+                    float alpha = 1.0f, beta = 0.0f;
+                    magma_sgemm(MagmaNoTrans, MagmaNoTrans, m, n, k,
+                                alpha, dB, ldda, dA, lddb, beta, dC, lddc, S.queue); // C^T = B^T * A^T
+
+                    magma_sgetmatrix(N, M, dC, lddc, C.raw(), (magma_int_t)C.c_, S.queue); // back to row-major C
+
+                    magma_free(dA); magma_free(dB); magma_free(dC);
+                } else if constexpr (std::is_same_v<T,double>) {
+                    magmaDouble_ptr dA=nullptr, dB=nullptr, dC=nullptr;
+                    if (magma_dmalloc(&dA, (size_t)lddb * (size_t)n) != MAGMA_SUCCESS) return false;
+                    if (magma_dmalloc(&dB, (size_t)ldda * (size_t)k) != MAGMA_SUCCESS) { magma_free(dA); return false; }
+                    if (magma_dmalloc(&dC, (size_t)lddc * (size_t)n) != MAGMA_SUCCESS) { magma_free(dA); magma_free(dB); return false; }
+
+                    magma_dsetmatrix(N, K, B.raw(), (magma_int_t)B.c_, dB, ldda, S.queue);
+                    magma_dsetmatrix(K, M, A.raw(), (magma_int_t)A.c_, dA, lddb, S.queue);
+
+                    double alpha = 1.0, beta = 0.0;
+                    magma_dgemm(MagmaNoTrans, MagmaNoTrans, m, n, k,
+                                alpha, dB, ldda, dA, lddb, beta, dC, lddc, S.queue);
+
+                    magma_dgetmatrix(N, M, dC, lddc, C.raw(), (magma_int_t)C.c_, S.queue);
+
+                    magma_free(dA); magma_free(dB); magma_free(dC);
+                } else {
+                    ok = false; // unsupported type for MAGMA
+                }
+                return ok;
+            }
         #endif
 
 };
