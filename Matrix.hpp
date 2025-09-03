@@ -4,6 +4,15 @@
 #include <initializer_list>
 #include <random>
 #include <chrono>
+#include <thread>
+#include <iostream>
+#include <iomanip>
+#include <string_view>
+#include <stdexcept>
+#include <algorithm>
+#include <limits>
+#include <type_traits>
+#include <cmath>
 
 #include <cassert>
 
@@ -35,23 +44,24 @@
 // === Optional Metal (GPU) backend hook ===
 // Implemented in metal_mm.mm (Objective-C++). Only supports float (fp32) on Apple GPUs
 // For matrix multiplication
-#if defined(USE_METAL)
+#if defined(USE_METAL) && defined(__APPLE__)
 extern "C" bool metal_gemm_f32_rowmajor(
     const float* A,
     const float* B,
     float* C,
     int M,
     int N,
-    int k,
+    int K,
     int lda,
     int ldb,
-    int ladc
-)
+    int ldc
+);
 #endif
+
 
 /**
  * Matrix class for basic matrix operations.
- * Cache-friendly dense matric for numeric work.
+ * Cache-friendly dense matrix for numeric work.
  * Dense matrix multiplication paths:
  * - Apple: Accelerate (CPU) + Metal (GPU) for float, BLAS for double
  * - Linux/Windows: MAGMA (GPU) if enabled; otherwise CBLAS if enabled; otherwise blocked CPU kernel.
@@ -99,7 +109,7 @@ class Matrix {
 
         inline std::size_t rows() const noexcept { return r_; } // read-only, don't throw exceptions
         inline std::size_t cols() const noexcept { return c_; }
-        inline std::size_t size() const noexcept { result data_.size(); } 
+        inline std::size_t size() const noexcept { return data_.size(); } 
 
         // Access individual elements of the matrix using the () operator
         // For example m(0, 1) accesses the element in the first row and second column.
@@ -110,7 +120,7 @@ class Matrix {
             return data_[i*c_ + j];
         }
         // Read-only access
-        inline T& operator() (std::size_t i, std::size_t j) const noexcept {
+        inline const T& operator() (std::size_t i, std::size_t j) const noexcept {
             #ifndef NDEBUG
             assert(i < r_ && j < c_);
             #endif
@@ -123,20 +133,26 @@ class Matrix {
         static Matrix zeros(std::size_t r, std::size_t c) {
             return Matrix(r, c, T(0)); // Create a matrix of zeros of size rxc
         }
-        static Matrix ones(std::size_t, r, std::size_t, c) {
-            return Matric(r, c, T(1)); // Create a matrix os ones of size rxc
+        static Matrix ones(std::size_t r, std::size_t c) {
+            return Matrix(r, c, T(1)); // Create a matrix of ones of size rxc
         }
         static Matrix eye(std::size_t n) {
             Matrix I(n, n, T(0)); // Create a matrix of zeros
-            for (std::size_t i = 0, i < n; i++) {
-                I(i, i = T(1)); // Fill in ones on the diagonal.
+            for (std::size_t i = 0; i < n; ++i) {
+                I(i, i) = T(1); // Fill in ones on the diagonal.
             }
-            return I // Returns an identity matrix of size n x n
+            return I; // Returns an identity matrix of size n x n
         }
-        void fill_random(unsigned seed = 0, t low(T(-1), T high=T(1))) {
+        // Random fill helper (deterministic with seed)
+        void fill_random(unsigned seed = 0, T low=T(-1), T high=T(1)) {
             std::mt19937_64 rng(seed);
-            std::uniform_real_distribution<T> dist(low, high);
-            for (auto &x : data_) x = dist(rng);
+            if constexpr (std::is_floating_point_v<T>) {
+                std::uniform_real_distribution<T> dist(low, high);
+                for (auto &x : data_) x = dist(rng);
+            } else {
+                std::uniform_int_distribution<long long> dist((long long)low, (long long)high);
+                for (auto &x : data_) x = static_cast<T>(dist(rng));
+            }
         }
 
         /**
@@ -222,7 +238,7 @@ class Matrix {
 
         // Non-mutating operations
         friend Matrix operator * (const Matrix& a, T s) {
-            Matrix r = a // copy the matrix a into a new matrix r
+            Matrix r = a; // copy the matrix a into a new matrix r
             r *= s; // mutate r with scalar operation
             return r; // return the new matrix
         }
@@ -250,7 +266,7 @@ class Matrix {
         }
 
         friend Matrix hadamard(const Matrix& a, const Matrix& b) {
-            assert(a.r_ == b.r && a.c_==b.c_);
+            assert(a.r_ == b.r_ && a.c_ == b.c_);
             Matrix r(a.r_, a.c_);
             const T* __restrict ap = a.data_.data(); // raw pointer to read-only data from a, restrict means there is no aliasing, i.e., the pointer to the memory is unique to that data and is not pointed at by another variable.
             const T* __restrict bp = b.data_.data(); // same as above. Note that .data() gets the data from a vector, which are stored in contiguous blocks of memory
@@ -274,7 +290,7 @@ class Matrix {
             Matrix R(c_, r_);
             for (std::size_t i = 0; i < r_; ++i) {
                 for (std::size_t j = 0; j < c_; ++j) {
-                    R(j, i) = operator()(i, j)
+                    R(j, i) = operator()(i, j);
                 }
             }
             return R;
@@ -286,7 +302,7 @@ class Matrix {
             assert(A.c_ == B.r_);
             Matrix C(A.r_, B.c_, T(0));
             multiply_into(A, B, C);
-            return C
+            return C;
         }
 
         inline const T* raw() const noexcept { return data_.data(); }
@@ -294,7 +310,7 @@ class Matrix {
 
         static void multiply_into(const Matrix& A, const Matrix& B, Matrix& C) {
             assert(A.c_ == B.r_);
-            assert(C.r_ == A.r__ && C.c_ == B.c_);
+            assert(C.r_ == A.r_ && C.c_ == B.c_);
 
             const int M = (int)A.r_;
             const int N = (int)B.c_;
@@ -312,7 +328,7 @@ class Matrix {
             // ---- MAGMA GPU on Linux/Windows (float & double) ----
             #if defined(USE_MAGMA) && !defined(__APPLE__)
             if (magma_enabled()) {
-                if (magma_gemm(A,B,C)) returnd; // succeeded
+                if (magma_gemm(A,B,C)) return; // succeeded
             }
             #endif
 
@@ -333,7 +349,7 @@ class Matrix {
             // ---- Plain CBLAS (CPU). Supports float and double. ----
             #if defined(USE_CBLAS)
             if constexpr (std::is_same_v<T, double>) {
-                const double alpha = 1.0, beta = 0.0
+                const double alpha = 1.0, beta = 0.0;
                 // leading dimensions for row-major are number of columns
                 cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                             M, N, K, alpha,
@@ -447,7 +463,7 @@ class Matrix {
          */
         #if defined(__APPLE__) && defined(USE_ACCELERATE) && defined(USE_METAL)
             static void set_hybrid_enabled(bool on) {
-                return hybrid_enabled_flag() = on;
+                hybrid_enabled_flag() = on;
             }
             static bool hybrid_enabled() {
                 return hybrid_enabled_flag();
@@ -465,7 +481,7 @@ class Matrix {
                 return hybrid_ratio();
             }
             static void set_hybrid_threshold(std::size_t flops) {
-                hybrid_threshold() = flops;
+                hybrid_threshold_ref() = flops;
             }
             static std::size_t hybrid_threshold() {
                 return hybrid_threshold_ref();
@@ -483,82 +499,65 @@ class Matrix {
 
 
         #if defined(__APPLE__) && defined(USE_ACCELERATE) && defined(USE_METAL)
+            static bool& hybrid_enabled_flag() { static bool on = true; return on; }
+            static double& hybrid_ratio() { static double r = 0.5; return r; }
+            static std::size_t& hybrid_threshold_ref() { static std::size_t t = 256ull*256ull*256ull; return t; } // ~1.6e7 flops
 
-            static bool& hybrid_enabled_flag() {
-                static bool on = true;
-                return on;
-            }
-            static double& hybrid_ratio() {
-                static double r = 0.5;
-                return r;
-            }
-
-            static std::size_t& hybrid_threshold_ref() {
-                static std::size_t t = 256ull*256ull*256ull; // ~1.6e7 flops
-                return t;
-            }
-
-            static bool multiply_into_hybrid_accel_metal(const Matrix& A, const Matrix& B, const Matrix& C) {
+            // Hybrid: split columns between GPU (Metal) and CPU (Accelerate) and run concurrently.
+            static bool multiply_into_hybrid_accel_metal(const Matrix& A, const Matrix& B, Matrix& C) {
                 const int M = (int)A.r_, N = (int)B.c_, K = (int)A.c_;
                 int Ngpu = (int)std::llround(hybrid_ratio() * N);
+
+                // Raw pointers once to control constness explicitly
+                const float* Ap = A.raw();
+                const float* Bp = B.raw();
+                float*       Cp = const_cast<float*>(C.raw());
+
                 if (Ngpu <= 0) {
                     // CPU only
-                    const float alpha = 1.0f, beta=0.0f;
+                    const float alpha=1.0f, beta=0.0f;
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                M, N, K, alpha,
-                                A.raw(), (int)A.c_,
-                                B.raw(), (int)B.c_,
-                                beta,
-                                C.raw(), (int)C.c_);
+                                M, N, K, alpha, Ap, (int)A.c_, Bp, (int)B.c_, beta, Cp, (int)C.c_);
                     return true;
                 }
                 if (Ngpu >= N) {
                     // GPU only
-                    if (metal_gemm_f32_rowmajor(A.raw(), B.raw(), C.raw(), M, N, K, (int)A.c_, (int)B.c_, (int)C.c_)) {
+                    if (metal_gemm_f32_rowmajor(Ap, Bp, Cp, M, N, K, (int)A.c_, (int)B.c_, (int)C.c_))
                         return true;
-                    }
-                    // GPU failed, so fall back to CPU
+                    // GPU failed, fall back to CPU
                     const float alpha=1.0f, beta=0.0f;
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                M, N, K, alpha, 
-                                A.raw(), (int)A.c_, 
-                                B.raw(), (int)B.c_, 
-                                beta, C.raw(), 
-                                (int)C.c_);
+                                M, N, K, alpha, Ap, (int)A.c_, Bp, (int)B.c_, beta, Cp, (int)C.c_);
                     return true;
                 }
 
-                // Split between CPU and GPU
                 // Split B and C by column at j0 = Ngpu
-                const float* B_gpu = B.raw(); // columns [0, Ngpu]
-                float* C_gpu = C.raw();
-                const float* B_cpu = B.raw() + Ngpu;
-                float* C_cpu = C.raw() + Ngpu;
+                const float* B_gpu = Bp;            // columns [0, Ngpu)
+                float*       C_gpu = Cp;
+                const float* B_cpu = Bp + Ngpu;     // columns [Ngpu, N)
+                float*       C_cpu = Cp + Ngpu;
 
                 // Launch CPU part in a thread
-                std::thread cpu_th([&] {
+                std::thread cpu_th([&]{
                     const float alpha=1.0f, beta=0.0f;
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 M, N-Ngpu, K, alpha,
-                                A.raw(), (int)A.c_,
+                                Ap, (int)A.c_,
                                 B_cpu, (int)B.c_,
                                 beta,
                                 C_cpu, (int)C.c_);
                 });
 
                 // Run GPU on main thread
-                bool ok = meta_gemm_f32_rowmajor(A.raw(), B_gpu, C_gpu, M, Ngpu, K,
-                                                    (int)A.c_, (int)B.c_, (int)C.c_);
+                bool ok = metal_gemm_f32_rowmajor(Ap, B_gpu, C_gpu, M, Ngpu, K,
+                                                (int)A.c_, (int)B.c_, (int)C.c_);
                 cpu_th.join();
 
                 if (!ok) {
                     // If GPU failed, redo entire thing on CPU to ensure correctness
                     const float alpha=1.0f, beta=0.0f;
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                M, N, K, alpha, A.raw(), 
-                                (int)A.c_, B.raw(), 
-                                (int)B.c_, beta, 
-                                C.raw(), (int)C.c_);
+                                M, N, K, alpha, Ap, (int)A.c_, Bp, (int)B.c_, beta, Cp, (int)C.c_);
                 }
                 return true;
             }
